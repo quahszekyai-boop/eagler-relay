@@ -2,8 +2,6 @@ const http = require("http");
 const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 10000;
-
-// Replace this only with an authorized WebSocket upstream.
 const UPSTREAM_URL = process.env.UPSTREAM_URL;
 
 if (!UPSTREAM_URL) {
@@ -25,26 +23,49 @@ const wss = new WebSocket.Server({
 wss.on("connection", (client) => {
   console.log("Client connected");
 
+  const queue = [];
+  let upstreamOpen = false;
+
   const upstream = new WebSocket(UPSTREAM_URL);
 
   upstream.on("open", () => {
     console.log("Upstream connected");
+    upstreamOpen = true;
+
+    // Send anything that arrived while upstream was connecting
+    for (const packet of queue) {
+      upstream.send(packet.data, {
+        binary: packet.isBinary
+      });
+    }
+
+    queue.length = 0;
   });
 
   client.on("message", (data, isBinary) => {
-    if (upstream.readyState === WebSocket.OPEN) {
-      upstream.send(data, { binary: isBinary });
+    if (upstreamOpen && upstream.readyState === WebSocket.OPEN) {
+      upstream.send(data, {
+        binary: isBinary
+      });
+    } else if (upstream.readyState === WebSocket.CONNECTING) {
+      queue.push({
+        data,
+        isBinary
+      });
     }
   });
 
   upstream.on("message", (data, isBinary) => {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(data, { binary: isBinary });
+      client.send(data, {
+        binary: isBinary
+      });
     }
   });
 
   client.on("close", () => {
     console.log("Client disconnected");
+
     if (
       upstream.readyState === WebSocket.OPEN ||
       upstream.readyState === WebSocket.CONNECTING
@@ -55,6 +76,9 @@ wss.on("connection", (client) => {
 
   upstream.on("close", () => {
     console.log("Upstream disconnected");
+
+    upstreamOpen = false;
+
     if (client.readyState === WebSocket.OPEN) {
       client.close();
     }
@@ -62,12 +86,21 @@ wss.on("connection", (client) => {
 
   client.on("error", (err) => {
     console.log("Client error:", err.message);
-    upstream.close();
+
+    if (
+      upstream.readyState === WebSocket.OPEN ||
+      upstream.readyState === WebSocket.CONNECTING
+    ) {
+      upstream.close();
+    }
   });
 
   upstream.on("error", (err) => {
     console.log("Upstream error:", err.message);
-    client.close();
+
+    if (client.readyState === WebSocket.OPEN) {
+      client.close();
+    }
   });
 });
 
