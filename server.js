@@ -3,11 +3,19 @@ const WebSocket = require("ws");
 
 const PORT = process.env.PORT || 10000;
 
+// Replace this only with an authorized WebSocket upstream.
+const UPSTREAM_URL = process.env.UPSTREAM_URL;
+
+if (!UPSTREAM_URL) {
+  console.error("Missing UPSTREAM_URL environment variable.");
+  process.exit(1);
+}
+
 const httpServer = http.createServer((req, res) => {
   res.writeHead(200, {
-    "Content-Type": "text/plain"
+    "Content-Type": "text/plain; charset=utf-8"
   });
-  res.end("Eaglercraft WebSocket relay is running.");
+  res.end("WebSocket relay is running.");
 });
 
 const wss = new WebSocket.Server({
@@ -15,23 +23,54 @@ const wss = new WebSocket.Server({
 });
 
 wss.on("connection", (client) => {
-  console.log("WebSocket client connected");
+  console.log("Client connected");
 
-  client.send("Relay WebSocket connection established.");
+  const upstream = new WebSocket(UPSTREAM_URL);
 
-  client.on("message", (message) => {
-    console.log("Received WebSocket data:", message.length, "bytes");
+  upstream.on("open", () => {
+    console.log("Upstream connected");
+  });
+
+  client.on("message", (data, isBinary) => {
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(data, { binary: isBinary });
+    }
+  });
+
+  upstream.on("message", (data, isBinary) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data, { binary: isBinary });
+    }
   });
 
   client.on("close", () => {
-    console.log("WebSocket client disconnected");
+    console.log("Client disconnected");
+    if (
+      upstream.readyState === WebSocket.OPEN ||
+      upstream.readyState === WebSocket.CONNECTING
+    ) {
+      upstream.close();
+    }
+  });
+
+  upstream.on("close", () => {
+    console.log("Upstream disconnected");
+    if (client.readyState === WebSocket.OPEN) {
+      client.close();
+    }
   });
 
   client.on("error", (err) => {
-    console.log("WebSocket error:", err.message);
+    console.log("Client error:", err.message);
+    upstream.close();
+  });
+
+  upstream.on("error", (err) => {
+    console.log("Upstream error:", err.message);
+    client.close();
   });
 });
 
 httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`HTTP/WebSocket server listening on port ${PORT}`);
+  console.log(`Relay listening on port ${PORT}`);
 });
